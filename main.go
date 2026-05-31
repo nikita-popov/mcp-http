@@ -21,7 +21,7 @@ import (
 // config holds all runtime configuration read from environment variables.
 type config struct {
 	cmd          string        // MCP_HTTP_CMD
-	port         string        // MCP_HTTP_PORT (default: 8770)
+	addr         string        // MCP_HTTP_ADDR (default: 127.0.0.1:8770)
 	tokensFile   string        // MCP_HTTP_TOKENS_FILE
 	allowedHosts []string      // MCP_HTTP_ALLOWED_HOSTS (comma-separated)
 	toolTimeout  time.Duration // MCP_HTTP_TOOL_TIMEOUT (default: 30s)
@@ -32,9 +32,9 @@ func loadConfig() config {
 	if cmd == "" {
 		log.Fatal("MCP_HTTP_CMD is required")
 	}
-	port := os.Getenv("MCP_HTTP_PORT")
-	if port == "" {
-		port = "8770"
+	addr := os.Getenv("MCP_HTTP_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:8770"
 	}
 	toolTimeout := 30 * time.Second
 	if v := os.Getenv("MCP_HTTP_TOOL_TIMEOUT"); v != "" {
@@ -52,7 +52,7 @@ func loadConfig() config {
 	}
 	return config{
 		cmd:          cmd,
-		port:         port,
+		addr:         addr,
 		tokensFile:   os.Getenv("MCP_HTTP_TOKENS_FILE"),
 		allowedHosts: allowedHosts,
 		toolTimeout:  toolTimeout,
@@ -220,9 +220,8 @@ func main() {
 	mux.HandleFunc("/healthz", s.chain(s.handleHealthz))
 	mux.HandleFunc("/", s.chain(s.handleCall))
 
-	addr := "127.0.0.1:" + cfg.port
-	log.Printf("listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	log.Printf("listening on %s", cfg.addr)
+	if err := http.ListenAndServe(cfg.addr, mux); err != nil {
 		log.Fatal(err)
 	}
 }

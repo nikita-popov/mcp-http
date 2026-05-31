@@ -16,7 +16,7 @@ import (
 
 func TestLoadConfig_Defaults(t *testing.T) {
 	t.Setenv("MCP_HTTP_CMD", "echo")
-	t.Setenv("MCP_HTTP_PORT", "")
+	t.Setenv("MCP_HTTP_ADDR", "")
 	t.Setenv("MCP_HTTP_TOOL_TIMEOUT", "")
 	t.Setenv("MCP_HTTP_ALLOWED_HOSTS", "")
 	t.Setenv("MCP_HTTP_TOKENS_FILE", "")
@@ -26,8 +26,8 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.cmd != "echo" {
 		t.Errorf("cmd: got %q, want %q", cfg.cmd, "echo")
 	}
-	if cfg.port != "8770" {
-		t.Errorf("port: got %q, want %q", cfg.port, "8770")
+	if cfg.addr != "127.0.0.1:8770" {
+		t.Errorf("addr: got %q, want %q", cfg.addr, "127.0.0.1:8770")
 	}
 	if cfg.toolTimeout != 30*time.Second {
 		t.Errorf("toolTimeout: got %v, want 30s", cfg.toolTimeout)
@@ -39,15 +39,15 @@ func TestLoadConfig_Defaults(t *testing.T) {
 
 func TestLoadConfig_AllEnv(t *testing.T) {
 	t.Setenv("MCP_HTTP_CMD", "dav-mcp --verbose")
-	t.Setenv("MCP_HTTP_PORT", "9000")
+	t.Setenv("MCP_HTTP_ADDR", "192.168.89.160:9889")
 	t.Setenv("MCP_HTTP_TOOL_TIMEOUT", "1m")
 	t.Setenv("MCP_HTTP_ALLOWED_HOSTS", "example.com , api.example.com")
 	t.Setenv("MCP_HTTP_TOKENS_FILE", "/tmp/tokens")
 
 	cfg := loadConfig()
 
-	if cfg.port != "9000" {
-		t.Errorf("port: got %q", cfg.port)
+	if cfg.addr != "192.168.89.160:9889" {
+		t.Errorf("addr: got %q", cfg.addr)
 	}
 	if cfg.toolTimeout != time.Minute {
 		t.Errorf("toolTimeout: got %v", cfg.toolTimeout)
@@ -91,8 +91,8 @@ func TestLoadTokens_File(t *testing.T) {
 
 	f.WriteString("# comment line\n")
 	f.WriteString("token-abc\n")
-	f.WriteString("  token-xyz  \n") // whitespace
-	f.WriteString("\n")              // blank
+	f.WriteString("  token-xyz  \n")
+	f.WriteString("\n")
 	f.WriteString("token-123\n")
 	f.Close()
 
@@ -113,22 +113,21 @@ func TestLoadTokens_File(t *testing.T) {
 
 // --- helpers for handler tests ---
 
-// newTestServer builds a *server without a real MCP session.
 func newTestServer(tokens map[string]struct{}, allowedHosts []string, tools []*mcp.Tool) *server {
 	return &server{
 		cfg: config{
 			cmd:          "test-cmd",
-			port:         "8770",
+			addr:         "127.0.0.1:8770",
 			allowedHosts: allowedHosts,
 			toolTimeout:  5 * time.Second,
 		},
 		tokens:  tokens,
-		session: nil, // not used in middleware/healthz tests
+		session: nil,
 		tools:   tools,
 	}
 }
 
-func noTokens() map[string]struct{}  { return map[string]struct{}{} }
+func noTokens() map[string]struct{} { return map[string]struct{}{} }
 func withToken(t string) map[string]struct{} {
 	return map[string]struct{}{t: {}}
 }

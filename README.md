@@ -47,7 +47,7 @@ All configuration is via environment variables (see `example.env`):
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `MCP_HTTP_CMD` | ✓ | — | Command to launch the upstream MCP server |
-| `MCP_HTTP_PORT` | | `8770` | Listen port (127.0.0.1 only) |
+| `MCP_HTTP_ADDR` | | `127.0.0.1:8770` | Listen address (`host:port`) |
 | `MCP_HTTP_TOKENS_FILE` | | — | Path to Bearer tokens file (one per line) |
 | `MCP_HTTP_ALLOWED_HOSTS` | | — | Comma-separated allowed Host headers |
 | `MCP_HTTP_TOOL_TIMEOUT` | | `30s` | Per-call timeout (Go duration) |
@@ -81,7 +81,7 @@ Create a config for each instance:
 ```bash
 # /etc/mcp-http/dav-mcp.env
 MCP_HTTP_CMD=dav-mcp
-MCP_HTTP_PORT=8771
+MCP_HTTP_ADDR=127.0.0.1:8771
 MCP_HTTP_TOKENS_FILE=/etc/mcp-http/dav-mcp.tokens
 ```
 
