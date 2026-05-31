@@ -1,17 +1,12 @@
-# Systemd template unit — one instance per upstream MCP server.
+# Template unit for running multiple mcp-http instances.
+# Copy to /etc/systemd/system/mcp-http@.service
 #
-# Usage:
-#   cp example@.service /etc/systemd/system/mcp-http@.service
-#   systemctl daemon-reload
+# Each instance is identified by %i (the part after @).
+# Config file: /etc/mcp-http/%i.env
 #
-#   # Create per-instance env file:
-#   cp example.env /etc/mcp-http/dav-mcp.env
-#   # Edit /etc/mcp-http/dav-mcp.env: set MCP_HTTP_CMD, MCP_HTTP_PORT, etc.
-#
+# Example usage:
 #   systemctl enable --now mcp-http@dav-mcp
 #   systemctl enable --now mcp-http@mempalace
-#
-#   systemctl status mcp-http@dav-mcp
 #   journalctl -u mcp-http@dav-mcp -f
 
 [Unit]
@@ -21,13 +16,8 @@ After=network.target
 [Service]
 Type=simple
 User=mcp-http
-Group=mcp-http
-WorkingDirectory=/opt/mcp-http
 EnvironmentFile=/etc/mcp-http/%i.env
-ExecStart=/opt/mcp-http/venv/bin/uvicorn server:app \
-    --host 127.0.0.1 \
-    --port ${MCP_HTTP_PORT} \
-    --no-access-log
+ExecStart=/usr/local/bin/mcp-http
 Restart=on-failure
 RestartSec=5
 

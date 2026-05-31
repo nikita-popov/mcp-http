@@ -1,3 +1,6 @@
+# Single instance. Copy to /etc/systemd/system/mcp-http.service
+# and create /etc/mcp-http/default.env.
+
 [Unit]
 Description=MCP HTTP Bridge
 After=network.target
@@ -5,13 +8,8 @@ After=network.target
 [Service]
 Type=simple
 User=mcp-http
-Group=mcp-http
-WorkingDirectory=/opt/mcp-http
-EnvironmentFile=-/etc/mcp-http/env
-ExecStart=/opt/mcp-http/venv/bin/uvicorn server:app \
-    --host 127.0.0.1 \
-    --port 8765 \
-    --no-access-log
+EnvironmentFile=/etc/mcp-http/default.env
+ExecStart=/usr/local/bin/mcp-http
 Restart=on-failure
 RestartSec=5
 

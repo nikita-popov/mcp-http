@@ -1,133 +1,100 @@
 # mcp-http
 
-Minimal MCP Streamable HTTP bridge. Wraps **any** local MCP stdio server and
-exposes it over HTTP with Bearer-token auth.
+HTTP bridge for any [stdio MCP](https://modelcontextprotocol.io/) server.
 
-Single file (`server.py`), no FastAPI. One process = one upstream server.
-For multiple servers — use the systemd template `mcp-http@.service`.
+One process = one upstream stdio MCP server.  
+Multiple servers → multiple instances via the `mcp-http@<name>.service` systemd template.
 
 ## How it works
 
 ```
-MCP client (HTTPS)
-      │  Bearer token
-      ▼
-  mcp-http (uvicorn)
-      │  MCP stdio subprocess
-      ▼
-  any-mcp-server (stdio)
+HTTP client  ──POST /──►  mcp-http  ──stdio──►  any MCP server
+             ◄─JSON───              ◄────────
 ```
 
-On startup mcp-http:
-1. Spawns the upstream MCP stdio server as a subprocess (`MCPClient`)
-2. Calls `list_tools()` to discover all available tools
-3. Registers every discovered tool as a passthrough FastMCP tool
-4. Serves them over Streamable HTTP with Bearer-token auth
+`mcp-http` connects to the upstream server at startup, discovers all tools via
+`list_tools`, and proxies `call_tool` requests over HTTP.
 
-No hardcoded tool list. Adding tools to the upstream server = they appear automatically.
+## API
 
-## Endpoints
+### `GET /healthz`
 
-| Path | Auth | Description |
-|---|---|---|
-| `GET /healthz` | — | Health check + tool list |
-| `POST /` | Bearer | MCP Streamable HTTP |
+Returns server status and list of available tools.
 
-`/healthz` response:
 ```json
-{"ok": true, "cmd": "dav-mcp", "tools": 8, "tool_names": ["..."]} 
+{"ok": true, "cmd": "dav-mcp", "tools": ["read_file", "write_file"]}
 ```
+
+### `POST /`
+
+Call a tool on the upstream MCP server.
+
+```json
+{"tool": "read_file", "arguments": {"path": "/etc/hosts"}}
+```
+
+Returns the MCP `CallToolResult` as JSON.
+
+If `MCP_HTTP_TOKENS_FILE` is set, the request must include:
+```
+Authorization: Bearer <token>
+```
+
+## Configuration
+
+All configuration is via environment variables (see `example.env`):
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `MCP_HTTP_CMD` | ✓ | — | Command to launch the upstream MCP server |
+| `MCP_HTTP_PORT` | | `8770` | Listen port (127.0.0.1 only) |
+| `MCP_HTTP_TOKENS_FILE` | | — | Path to Bearer tokens file (one per line) |
+| `MCP_HTTP_ALLOWED_HOSTS` | | — | Comma-separated allowed Host headers |
+| `MCP_HTTP_TOOL_TIMEOUT` | | `30s` | Per-call timeout (Go duration) |
 
 ## Install
 
 ```bash
-useradd -r -s /usr/sbin/nologin mcp-http
-mkdir -p /opt/mcp-http /etc/mcp-http
-python3 -m venv /opt/mcp-http/venv
-/opt/mcp-http/venv/bin/pip install -r requirements.txt
-cp server.py /opt/mcp-http/
+go install github.com/nikita-popov/mcp-http@latest
 ```
 
-The upstream MCP server (e.g. `dav-mcp`) must be installed separately and
-accessible via `MCP_HTTP_CMD`.
+Or build from source:
 
-## Config
+```bash
+git clone https://github.com/nikita-popov/mcp-http
+cd mcp-http
+go build -o mcp-http .
+sudo mv mcp-http /usr/local/bin/
+```
 
-See `example.env` for all variables. Key ones:
+## systemd (multi-instance)
 
-```env
-# Command to launch the upstream MCP stdio server
-MCP_HTTP_CMD=/opt/dav-mcp/dav-mcp
+Copy the template unit:
 
-# Port this instance listens on
+```bash
+sudo cp example@.service /etc/systemd/system/mcp-http@.service
+sudo systemctl daemon-reload
+```
+
+Create a config for each instance:
+
+```bash
+# /etc/mcp-http/dav-mcp.env
+MCP_HTTP_CMD=dav-mcp
 MCP_HTTP_PORT=8771
-
-# Bearer tokens file (one token per line)
 MCP_HTTP_TOKENS_FILE=/etc/mcp-http/dav-mcp.tokens
-
-# Allowed external hostnames (DNS rebinding protection)
-MCP_HTTP_ALLOWED_HOSTS=your-domain.example.com
 ```
 
-Generate a token:
-```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-## Single instance (mcp-http.service)
+Enable and start:
 
 ```bash
-cp example.service /etc/systemd/system/mcp-http.service
-cp example.env /etc/mcp-http/env
-# edit /etc/mcp-http/env
-systemctl enable --now mcp-http
+sudo systemctl enable --now mcp-http@dav-mcp
+sudo systemctl enable --now mcp-http@mempalace
+sudo journalctl -u mcp-http@dav-mcp -f
 ```
 
-## Multiple instances (mcp-http@.service)
+See `example.nginx.conf` for a reverse proxy configuration.
 
-One systemd template unit, one env file per upstream server:
+## License
 
-```bash
-cp example@.service /etc/systemd/system/mcp-http@.service
-systemctl daemon-reload
-
-# Instance: dav-mcp on port 8771
-cp example.env /etc/mcp-http/dav-mcp.env
-# edit /etc/mcp-http/dav-mcp.env — set MCP_HTTP_CMD, MCP_HTTP_PORT, etc.
-systemctl enable --now mcp-http@dav-mcp
-
-# Instance: mempalace on port 8772
-cp example.env /etc/mcp-http/mempalace.env
-# edit /etc/mcp-http/mempalace.env
-systemctl enable --now mcp-http@mempalace
-
-# Manage
-systemctl status 'mcp-http@*'
-journalctl -u mcp-http@dav-mcp -f
-```
-
-### nginx (multi-instance example)
-
-```nginx
-# mcp-http@dav-mcp  → /dav/
-location /dav/ {
-    proxy_pass http://127.0.0.1:8771/;
-    proxy_buffering off;
-    proxy_read_timeout 300s;
-}
-
-# mcp-http@mempalace → /mem/
-location /mem/ {
-    proxy_pass http://127.0.0.1:8772/;
-    proxy_buffering off;
-    proxy_read_timeout 300s;
-}
-```
-
-See `example.nginx.conf` for the full location block template.
-
-## MCP connector
-
-- **URL**: `https://your-domain/mcp/` (or per-instance path)
-- **Transport**: Streamable HTTP
-- **Auth**: Bearer token from tokens file
+MIT
