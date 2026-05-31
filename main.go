@@ -124,15 +124,36 @@ func (p *proxy) buildServer() *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "mcp-http", Version: "v1.0.0"}, nil)
 
 	for _, t := range p.tools {
-		tool := t // capture
-		srv.AddTool(tool, func(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
+		tool := t // capture loop var
+
+		// Ensure InputSchema is always a valid JSON object schema.
+		// Upstream may provide nil or a schema; fall back to empty object schema.
+		schema := tool.InputSchema
+		if schema == nil {
+			schema = json.RawMessage(`{"type":"object"}`)
+		}
+		proxiedTool := &mcp.Tool{
+			Name:        tool.Name,
+			Description: tool.Description,
+			InputSchema: schema,
+		}
+
+		srv.AddTool(proxiedTool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			t0 := time.Now()
 			ctx, cancel := context.WithTimeout(ctx, p.cfg.toolTimeout)
 			defer cancel()
 
+			// Unmarshal raw arguments for upstream call.
+			var args map[string]any
+			if raw := req.Params.Arguments; len(raw) > 0 {
+				if err := json.Unmarshal(raw, &args); err != nil {
+					return nil, fmt.Errorf("bad arguments: %w", err)
+				}
+			}
+
 			res, err := p.session.CallTool(ctx, &mcp.CallToolParams{
 				Name:      tool.Name,
-				Arguments: params.Arguments,
+				Arguments: args,
 			})
 			ms := time.Since(t0).Milliseconds()
 			if err != nil {
@@ -154,7 +175,7 @@ func (p *proxy) authMiddleware(next http.Handler) http.Handler {
 			auth := r.Header.Get("Authorization")
 			token := strings.TrimPrefix(auth, "Bearer ")
 			if _, ok := p.tokens[token]; !ok {
-				log.Printf("[auth] 401 invalid/missing token path=%s remote=%s", r.URL.Path, r.RemoteAddr)
+				log.Printf("[auth] 401 path=%s remote=%s", r.URL.Path, r.RemoteAddr)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -179,7 +200,7 @@ func (p *proxy) hostMiddleware(next http.Handler) http.Handler {
 				}
 			}
 			if !allowed {
-				log.Printf("[host] 403 blocked host=%q path=%s remote=%s", r.Host, r.URL.Path, r.RemoteAddr)
+				log.Printf("[host] 403 host=%q path=%s remote=%s", r.Host, r.URL.Path, r.RemoteAddr)
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
@@ -207,11 +228,12 @@ func main() {
 	p := newProxy(cfg)
 	srv := p.buildServer()
 
-	// MCP Streamable HTTP handler (standard MCP protocol over HTTP).
-	mcpHandler, err := srv.NewStreamableHTTPHandler(context.Background(), nil)
-	if err != nil {
-		log.Fatalf("cannot create MCP handler: %v", err)
-	}
+	// mcp.NewStreamableHTTPHandler is a package-level func (not a method on Server).
+	// It receives a factory func so the same handler can serve multiple server instances;
+	// here we always return the same singleton.
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+		return srv
+	}, nil)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", p.handleHealthz)
