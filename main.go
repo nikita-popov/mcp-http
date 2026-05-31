@@ -1,4 +1,4 @@
-// mcp-http: HTTP bridge for any stdio MCP server.
+// mcp-http: MCP Streamable HTTP bridge for any stdio MCP server.
 // One process = one upstream stdio MCP server.
 // Configure via environment variables (see example.env).
 package main
@@ -60,14 +60,17 @@ func loadConfig() config {
 }
 
 // loadTokens reads Bearer tokens from a file (one per line, # comments allowed).
+// Returns empty map (auth disabled) when path is empty or file is missing.
 func loadTokens(path string) map[string]struct{} {
 	tokens := make(map[string]struct{})
 	if path == "" {
+		log.Print("[auth] no tokens file configured — auth disabled (dev mode)")
 		return tokens
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		log.Fatalf("cannot open tokens file %q: %v", path, err)
+		log.Printf("[auth] cannot open tokens file %q — auth disabled: %v", path, err)
+		return tokens
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -78,149 +81,143 @@ func loadTokens(path string) map[string]struct{} {
 		}
 		tokens[line] = struct{}{}
 	}
+	log.Printf("[auth] loaded %d token(s) from %s", len(tokens), path)
 	return tokens
 }
 
-// server wraps the MCP client session and HTTP configuration.
-type server struct {
+// proxy holds the upstream MCP client session and discovered tools.
+type proxy struct {
 	cfg     config
 	tokens  map[string]struct{}
 	session *mcp.ClientSession
 	tools   []*mcp.Tool
 }
 
-func newServer(cfg config) *server {
+func newProxy(cfg config) *proxy {
 	tokens := loadTokens(cfg.tokensFile)
 
-	// Parse command: split by spaces to support args in MCP_HTTP_CMD.
 	parts := strings.Fields(cfg.cmd)
 	cmd := exec.Command(parts[0], parts[1:]...)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "mcp-http", Version: "v1.0.0"}, nil)
 	session, err := client.Connect(context.Background(), &mcp.CommandTransport{Command: cmd}, nil)
 	if err != nil {
-		log.Fatalf("cannot connect to MCP server %q: %v", cfg.cmd, err)
+		log.Fatalf("[upstream] cannot connect to %q: %v", cfg.cmd, err)
 	}
 
-	// Collect all tools eagerly for /healthz and validation.
 	var tools []*mcp.Tool
 	if session.InitializeResult().Capabilities.Tools != nil {
 		for t, err := range session.Tools(context.Background(), nil) {
 			if err != nil {
-				log.Fatalf("list_tools failed: %v", err)
+				log.Fatalf("[upstream] list_tools failed: %v", err)
 			}
 			tools = append(tools, t)
 		}
 	}
-	log.Printf("connected to %q, %d tool(s) available", cfg.cmd, len(tools))
+	log.Printf("[upstream] connected to %q, %d tool(s)", cfg.cmd, len(tools))
 
-	return &server{cfg: cfg, tokens: tokens, session: session, tools: tools}
+	return &proxy{cfg: cfg, tokens: tokens, session: session, tools: tools}
+}
+
+// buildServer constructs an MCP server that proxies all upstream tools.
+func (p *proxy) buildServer() *mcp.Server {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "mcp-http", Version: "v1.0.0"}, nil)
+
+	for _, t := range p.tools {
+		tool := t // capture
+		srv.AddTool(tool, func(ctx context.Context, _ *mcp.ServerSession, params *mcp.CallToolParamsFor[map[string]any]) (*mcp.CallToolResult, error) {
+			t0 := time.Now()
+			ctx, cancel := context.WithTimeout(ctx, p.cfg.toolTimeout)
+			defer cancel()
+
+			res, err := p.session.CallTool(ctx, &mcp.CallToolParams{
+				Name:      tool.Name,
+				Arguments: params.Arguments,
+			})
+			ms := time.Since(t0).Milliseconds()
+			if err != nil {
+				log.Printf("[tool] %s → error %dms: %v", tool.Name, ms, err)
+				return nil, fmt.Errorf("upstream: %w", err)
+			}
+			log.Printf("[tool] %s → ok %dms", tool.Name, ms)
+			return res, nil
+		})
+	}
+
+	return srv
 }
 
 // authMiddleware enforces Bearer token authentication when tokens are configured.
-func (s *server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if len(s.tokens) > 0 {
+func (p *proxy) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(p.tokens) > 0 {
 			auth := r.Header.Get("Authorization")
 			token := strings.TrimPrefix(auth, "Bearer ")
-			if _, ok := s.tokens[token]; !ok {
+			if _, ok := p.tokens[token]; !ok {
+				log.Printf("[auth] 401 invalid/missing token path=%s remote=%s", r.URL.Path, r.RemoteAddr)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
-		next(w, r)
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // hostMiddleware blocks requests from disallowed Host headers (DNS rebinding protection).
-func (s *server) hostMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if len(s.cfg.allowedHosts) > 0 {
+func (p *proxy) hostMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(p.cfg.allowedHosts) > 0 {
 			host := r.Host
 			if idx := strings.LastIndex(host, ":"); idx != -1 {
 				host = host[:idx]
 			}
 			allowed := false
-			for _, h := range s.cfg.allowedHosts {
+			for _, h := range p.cfg.allowedHosts {
 				if h == host {
 					allowed = true
 					break
 				}
 			}
 			if !allowed {
+				log.Printf("[host] 403 blocked host=%q path=%s remote=%s", r.Host, r.URL.Path, r.RemoteAddr)
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
 		}
-		next(w, r)
-	}
-}
-
-func (s *server) chain(h http.HandlerFunc) http.HandlerFunc {
-	return s.hostMiddleware(s.authMiddleware(h))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleHealthz returns server status and available tools.
-func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
-	toolNames := make([]string, len(s.tools))
-	for i, t := range s.tools {
+func (p *proxy) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	toolNames := make([]string, len(p.tools))
+	for i, t := range p.tools {
 		toolNames[i] = t.Name
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"ok":    true,
-		"cmd":   s.cfg.cmd,
+		"cmd":   p.cfg.cmd,
 		"tools": toolNames,
 	})
 }
 
-// callRequest is the JSON body expected by POST /.
-type callRequest struct {
-	Tool      string         `json:"tool"`
-	Arguments map[string]any `json:"arguments"`
-}
-
-// handleCall proxies a tool call to the upstream MCP server.
-func (s *server) handleCall(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req callRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("bad request: %v", err), http.StatusBadRequest)
-		return
-	}
-	if req.Tool == "" {
-		http.Error(w, "missing \"tool\" field", http.StatusBadRequest)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.toolTimeout)
-	defer cancel()
-
-	res, err := s.session.CallTool(ctx, &mcp.CallToolParams{
-		Name:      req.Tool,
-		Arguments: req.Arguments,
-	})
-	if err != nil {
-		http.Error(w, fmt.Sprintf("call_tool failed: %v", err), http.StatusBadGateway)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(res)
-}
-
 func main() {
 	cfg := loadConfig()
-	s := newServer(cfg)
+	p := newProxy(cfg)
+	srv := p.buildServer()
+
+	// MCP Streamable HTTP handler (standard MCP protocol over HTTP).
+	mcpHandler, err := srv.NewStreamableHTTPHandler(context.Background(), nil)
+	if err != nil {
+		log.Fatalf("cannot create MCP handler: %v", err)
+	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.chain(s.handleHealthz))
-	mux.HandleFunc("/", s.chain(s.handleCall))
+	mux.HandleFunc("/healthz", p.handleHealthz)
+	mux.Handle("/", p.hostMiddleware(p.authMiddleware(mcpHandler)))
 
-	log.Printf("listening on %s", cfg.addr)
+	log.Printf("[mcp-http] listening on %s, upstream: %s", cfg.addr, cfg.cmd)
 	if err := http.ListenAndServe(cfg.addr, mux); err != nil {
 		log.Fatal(err)
 	}
