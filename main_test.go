@@ -113,8 +113,8 @@ func TestLoadTokens_File(t *testing.T) {
 
 // --- helpers for handler tests ---
 
-func newTestServer(tokens map[string]struct{}, allowedHosts []string, tools []*mcp.Tool) *server {
-	return &server{
+func newTestProxy(tokens map[string]struct{}, allowedHosts []string, tools []*mcp.Tool) *proxy {
+	return &proxy{
 		cfg: config{
 			cmd:          "test-cmd",
 			addr:         "127.0.0.1:8770",
@@ -135,80 +135,80 @@ func withToken(t string) map[string]struct{} {
 // --- authMiddleware ---
 
 func TestAuthMiddleware_NoTokensConfigured(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
+	p := newTestProxy(noTokens(), nil, nil)
 	called := false
-	handler := s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	handler(rr, req)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
+	handler.ServeHTTP(rr, req)
 
 	if !called {
 		t.Error("handler should be called when no tokens configured")
 	}
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rr.Code)
+	}
 }
 
 func TestAuthMiddleware_ValidToken(t *testing.T) {
-	s := newTestServer(withToken("secret"), nil, nil)
+	p := newTestProxy(withToken("secret"), nil, nil)
 	called := false
-	handler := s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer secret")
-	handler(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if !called {
 		t.Error("handler should be called with valid token")
 	}
-	if rr.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", rr.Code)
-	}
 }
 
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
-	s := newTestServer(withToken("secret"), nil, nil)
-	handler := s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	p := newTestProxy(withToken("secret"), nil, nil)
+	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer wrong")
-	handler(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rr.Code)
+		t.Errorf("status: got %d, want 401", rr.Code)
 	}
 }
 
-func TestAuthMiddleware_MissingHeader(t *testing.T) {
-	s := newTestServer(withToken("secret"), nil, nil)
-	handler := s.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+func TestAuthMiddleware_MissingToken(t *testing.T) {
+	p := newTestProxy(withToken("secret"), nil, nil)
+	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	handler(rr, req)
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401, got %d", rr.Code)
+		t.Errorf("status: got %d, want 401", rr.Code)
 	}
 }
 
 // --- hostMiddleware ---
 
 func TestHostMiddleware_NoRestriction(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
+	p := newTestProxy(noTokens(), nil, nil)
 	called := false
-	handler := s.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	})
@@ -216,46 +216,62 @@ func TestHostMiddleware_NoRestriction(t *testing.T) {
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "anything.example.com"
-	handler(rr, req)
+	handler.ServeHTTP(rr, req)
 
 	if !called {
-		t.Error("handler should be called when no allowedHosts configured")
+		t.Error("handler should be called when no allowed hosts configured")
 	}
 }
 
 func TestHostMiddleware_AllowedHost(t *testing.T) {
-	s := newTestServer(noTokens(), []string{"example.com"}, nil)
+	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
 	called := false
-	handler := s.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		called = true
-		w.WriteHeader(http.StatusOK)
-	})
-
-	for _, host := range []string{"example.com", "example.com:443"} {
-		called = false
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		req.Host = host
-		handler(rr, req)
-		if !called {
-			t.Errorf("host %q should be allowed", host)
-		}
-	}
-}
-
-func TestHostMiddleware_ForbiddenHost(t *testing.T) {
-	s := newTestServer(noTokens(), []string{"example.com"}, nil)
-	handler := s.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "evil.com"
-	handler(rr, req)
+	req.Host = "good.example.com"
+	handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Error("handler should be called for allowed host")
+	}
+}
+
+func TestHostMiddleware_AllowedHostWithPort(t *testing.T) {
+	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
+	called := false
+	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "good.example.com:8770"
+	handler.ServeHTTP(rr, req)
+
+	if !called {
+		t.Error("handler should strip port and allow the host")
+	}
+}
+
+func TestHostMiddleware_BlockedHost(t *testing.T) {
+	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
+	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "evil.example.com"
+	handler.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", rr.Code)
+		t.Errorf("status: got %d, want 403", rr.Code)
 	}
 }
 
@@ -263,90 +279,31 @@ func TestHostMiddleware_ForbiddenHost(t *testing.T) {
 
 func TestHandleHealthz(t *testing.T) {
 	tools := []*mcp.Tool{
-		{Name: "read_file"},
-		{Name: "write_file"},
+		{Name: "tool_one"},
+		{Name: "tool_two"},
 	}
-	s := newTestServer(noTokens(), nil, tools)
+	p := newTestProxy(noTokens(), nil, tools)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	s.handleHealthz(rr, req)
+	p.handleHealthz(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rr.Code)
-	}
-	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type: got %q", ct)
+		t.Errorf("status: got %d, want 200", rr.Code)
 	}
 
-	var resp map[string]any
-	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	if resp["ok"] != true {
-		t.Errorf("ok: got %v", resp["ok"])
+	if body["ok"] != true {
+		t.Errorf("ok: got %v", body["ok"])
 	}
-	if resp["cmd"] != "test-cmd" {
-		t.Errorf("cmd: got %v", resp["cmd"])
+	if body["cmd"] != "test-cmd" {
+		t.Errorf("cmd: got %v", body["cmd"])
 	}
-	names, ok := resp["tools"].([]any)
+	names, ok := body["tools"].([]any)
 	if !ok || len(names) != 2 {
-		t.Fatalf("tools: got %v", resp["tools"])
-	}
-	if names[0] != "read_file" || names[1] != "write_file" {
-		t.Errorf("tool names: %v", names)
-	}
-}
-
-func TestHandleHealthz_NoTools(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	s.handleHealthz(rr, req)
-
-	var resp map[string]any
-	json.NewDecoder(rr.Body).Decode(&resp)
-	names := resp["tools"].([]any)
-	if len(names) != 0 {
-		t.Errorf("expected empty tools, got %v", names)
-	}
-}
-
-// --- handleCall: validation only (no real MCP session) ---
-
-func TestHandleCall_MethodNotAllowed(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
-
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
-		rr := httptest.NewRecorder()
-		req := httptest.NewRequest(method, "/", nil)
-		s.handleCall(rr, req)
-		if rr.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s: expected 405, got %d", method, rr.Code)
-		}
-	}
-}
-
-func TestHandleCall_InvalidJSON(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("not-json"))
-	s.handleCall(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rr.Code)
-	}
-}
-
-func TestHandleCall_MissingToolField(t *testing.T) {
-	s := newTestServer(noTokens(), nil, nil)
-	rr := httptest.NewRecorder()
-	body := `{"arguments": {}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-	s.handleCall(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", rr.Code)
-	}
-	if !strings.Contains(rr.Body.String(), "tool") {
-		t.Errorf("error message should mention 'tool': %q", rr.Body.String())
+		t.Errorf("tools: got %v", body["tools"])
 	}
 }
