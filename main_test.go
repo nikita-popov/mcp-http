@@ -128,19 +128,24 @@ func newTestProxy(tokens map[string]struct{}, allowedHosts []string, tools []*mc
 }
 
 func noTokens() map[string]struct{} { return map[string]struct{}{} }
-func withToken(t string) map[string]struct{} {
-	return map[string]struct{}{t: {}}
+func withToken(tok string) map[string]struct{} {
+	return map[string]struct{}{tok: {}}
 }
+
+// okHandler is a trivial http.Handler that always responds 200.
+var okHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+})
 
 // --- authMiddleware ---
 
 func TestAuthMiddleware_NoTokensConfigured(t *testing.T) {
 	p := newTestProxy(noTokens(), nil, nil)
 	called := false
-	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
@@ -157,10 +162,10 @@ func TestAuthMiddleware_NoTokensConfigured(t *testing.T) {
 func TestAuthMiddleware_ValidToken(t *testing.T) {
 	p := newTestProxy(withToken("secret"), nil, nil)
 	called := false
-	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
@@ -174,9 +179,7 @@ func TestAuthMiddleware_ValidToken(t *testing.T) {
 
 func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	p := newTestProxy(withToken("secret"), nil, nil)
-	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	handler := p.authMiddleware(okHandler)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}"))
@@ -190,9 +193,7 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 
 func TestAuthMiddleware_MissingToken(t *testing.T) {
 	p := newTestProxy(withToken("secret"), nil, nil)
-	handler := p.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	handler := p.authMiddleware(okHandler)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
@@ -208,10 +209,10 @@ func TestAuthMiddleware_MissingToken(t *testing.T) {
 func TestHostMiddleware_NoRestriction(t *testing.T) {
 	p := newTestProxy(noTokens(), nil, nil)
 	called := false
-	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.hostMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -226,10 +227,10 @@ func TestHostMiddleware_NoRestriction(t *testing.T) {
 func TestHostMiddleware_AllowedHost(t *testing.T) {
 	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
 	called := false
-	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.hostMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -244,10 +245,10 @@ func TestHostMiddleware_AllowedHost(t *testing.T) {
 func TestHostMiddleware_AllowedHostWithPort(t *testing.T) {
 	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
 	called := false
-	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	handler := p.hostMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -261,9 +262,7 @@ func TestHostMiddleware_AllowedHostWithPort(t *testing.T) {
 
 func TestHostMiddleware_BlockedHost(t *testing.T) {
 	p := newTestProxy(noTokens(), []string{"good.example.com"}, nil)
-	handler := p.hostMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	})
+	handler := p.hostMiddleware(okHandler)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
