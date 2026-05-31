@@ -20,10 +20,10 @@ import (
 
 // config holds all runtime configuration read from environment variables.
 type config struct {
-	cmd          string   // MCP_HTTP_CMD
-	port         string   // MCP_HTTP_PORT (default: 8770)
-	tokensFile   string   // MCP_HTTP_TOKENS_FILE
-	allowedHosts []string // MCP_HTTP_ALLOWED_HOSTS (comma-separated)
+	cmd          string        // MCP_HTTP_CMD
+	port         string        // MCP_HTTP_PORT (default: 8770)
+	tokensFile   string        // MCP_HTTP_TOKENS_FILE
+	allowedHosts []string      // MCP_HTTP_ALLOWED_HOSTS (comma-separated)
 	toolTimeout  time.Duration // MCP_HTTP_TOOL_TIMEOUT (default: 30s)
 }
 
@@ -51,11 +51,11 @@ func loadConfig() config {
 		}
 	}
 	return config{
-		cmd:         cmd,
-		port:        port,
-		tokensFile:  os.Getenv("MCP_HTTP_TOKENS_FILE"),
+		cmd:          cmd,
+		port:         port,
+		tokensFile:   os.Getenv("MCP_HTTP_TOKENS_FILE"),
 		allowedHosts: allowedHosts,
-		toolTimeout: toolTimeout,
+		toolTimeout:  toolTimeout,
 	}
 }
 
