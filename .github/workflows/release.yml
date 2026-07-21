@@ -35,13 +35,13 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          out="dav-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" ./cmd/dav-mcp
+          out="mcp-http-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dav-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dav-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          name: mcp-http-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: mcp-http-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
 
   release:
     needs: build
